@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Chrome Dino: Spider-Man Edition</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+        }
+        body {
+            font-family: 'Press Start 2P', monospace;
+            background-color: #f7f7f7;
+            color: #535353;
+            transition: background-color 0.8s ease, color 0.8s ease;
+        }
+        body.dark-mode {
+            background-color: #202124;
+            color: #acacac;
+        }
+        canvas {
+            display: block;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-2 sm:p-4" id="game-body">
+
+    <div class="w-full max-w-4xl flex flex-col items-center">
+        
+        <!-- Header Controls -->
+        <div class="w-full flex justify-between items-center mb-2 px-2 text-xs sm:text-sm">
+            <div class="flex items-center gap-2">
+                <span class="font-bold tracking-wider opacity-80">SPIDEY RUNNER</span>
+            </div>
+            <div class="flex items-center gap-4">
+                <button id="theme-toggle" class="hover:opacity-75 focus:outline-none text-xs px-2 py-1 border border-current rounded">
+                    🌙 DARK
+                </button>
+                <button id="sound-toggle" class="hover:opacity-75 focus:outline-none text-xs px-2 py-1 border border-current rounded">
+                    🔊 SOUND: ON
+                </button>
+            </div>
+        </div>
+
+        <!-- Canvas Game Container -->
+        <div class="relative w-full aspect-[3.2/1] max-h-[300px] border-b-2 border-slate-400 dark:border-slate-600 overflow-hidden" id="canvas-container">
+            <canvas id="dinoCanvas" class="w-full h-full"></canvas>
+
+            <!-- Touch Controls for Mobile -->
+            <div class="absolute inset-0 grid grid-rows-2 md:hidden pointer-events-auto" id="touch-controls">
+                <div id="touch-jump" class="w-full h-full"></div>
+                <div id="touch-duck" class="w-full h-full"></div>
+            </div>
+        </div>
+
+        <!-- Control Instructions -->
+        <div class="w-full mt-4 flex flex-wrap justify-center gap-3 text-[10px] sm:text-xs opacity-75">
+            <span class="px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded"><strong>Space / Up</strong> : Jump / Web-Swing</span>
+            <span class="px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded"><strong>Down Arrow</strong> : Crawl / Slide</span>
+            <span class="px-2 py-1 bg-slate-200 dark:bg-slate-800 rounded md:hidden"><strong>Tap Top / Bottom</strong> : Jump / Crawl</span>
+        </div>
+    </div>
+
+    <script>
+        class SoundFX {
+            constructor() {
+                this.ctx = null;
+                this.enabled = true;
+            }
+
+            init() {
+                if (!this.ctx) {
+                    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                    if (AudioContextClass) this.ctx = new AudioContextClass();
+                }
+            }
+
+            playTone(freq, type, duration, vol = 0.08) {
+                if (!this.enabled) return;
+                this.init();
+                if (!this.ctx) return;
+                try {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = type;
+                    osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                    gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.0001, this.ctx.currentTime + duration);
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    osc.start();
+                    osc.stop(this.ctx.currentTime + duration);
+                } catch (e) {}
+            }
+
+            // Web-shooting sound (Thwip!)
+            thwip() {
+                if (!this.enabled) return;
+                this.init();
+                if (!this.ctx) return;
+                try {
+                    const now = this.ctx.currentTime;
+                    const bufferSize = this.ctx.sampleRate * 0.07;
+                    const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                    const output = buffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) {
+                        output[i] = Math.random() * 2 - 1;
+                    }
+                    const whiteNoise = this.ctx.createBufferSource();
+                    whiteNoise.buffer = buffer;
+
+                    const filter = this.ctx.createBiquadFilter();
+                    filter.type = 'bandpass';
+                    filter.frequency.setValueAtTime(1500, now);
+                    filter.frequency.exponentialRampToValueAtTime(3200, now + 0.07);
+                    filter.Q.value = 4;
+
+                    const gain = this.ctx.createGain();
+                    gain.gain.setValueAtTime(0.12, now);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
+
+                    whiteNoise.connect(filter);
+                    filter.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    whiteNoise.start(now);
+
+                    // High pitch whistle
+                    this.playTone(1800, 'sine', 0.05, 0.05);
+                } catch (e) {}
+            }
+
+            scoreMilestone() {
+                this.playTone(587.33, 'square', 0.08, 0.08); // D5
+                setTimeout(() => this.playTone(880.00, 'square', 0.12, 0.08), 80); // A5
+            }
+
+            hit() {
+                if (!this.enabled) return;
+                this.init();
+                if (!this.ctx) return;
+                try {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+                    osc.frequency.linearRampToValueAtTime(40, this.ctx.currentTime + 0.25);
+                    gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+                    gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.25);
+                    osc.connect(gain);
+                    gain.connect(this.ctx.destination);
+                    osc.start();
+                    osc.stop(this.ctx.currentTime + 0.25);
+                } catch(e) {}
+            }
+        }
+
+        const sounds = new SoundFX();
+
+        const canvas = document.getElementById('dinoCanvas');
+        const ctx = canvas.getContext('2d');
+        const bodyEl = document.getElementById('game-body');
+        const themeToggle = document.getElementById('theme-toggle');
+        const soundToggle = document.getElementById('sound-toggle');
+
+        const GAME_WIDTH = 600;
+        const GAME_HEIGHT = 150;
+        const GROUND_Y = 125;
+
+        let isDarkMode = false;
+        let gameSpeed = 6;
+        let score = 0;
+        let highScore = parseInt(localStorage.getItem('spidey_dino_hi_score') || '0', 10);
+        let gameState = 'START'; // 'START', 'PLAYING', 'GAMEOVER'
+        let frameTicks = 0;
+
+        // Resize Canvas dynamically keeping 600x150 aspect ratio
+        function resizeCanvas() {
+            canvas.width = GAME_WIDTH;
+            canvas.height = GAME_HEIGHT;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        class RealisticSpiderMan {
+            constructor() {
+                this.x = 40;
+                this.y = GROUND_Y - 42;
+                this.width = 24;
+                this.height = 42;
+                this.vy = 0;
+                this.gravity = 0.6;
+                this.jumpForce = -10.8;
+                this.isJumping = false;
+                this.isCrawling = false;
+                this.animTime = 0;
+                this.webX = 0;
+                this.webY = 0;
+            }
+
+            jump() {
+                if (!this.isJumping && !this.isCrawling) {
+                    this.vy = this.jumpForce;
+                    this.isJumping = true;
+                    this.webX = this.x + 60;
+                    this.webY = -20;
+                    sounds.thwip();
+                }
+            }
+
+            crawl(enable) {
+                if (this.isJumping) return;
+                this.isCrawling = enable;
+                if (enable) {
+                    this.width = 38;
+                    this.height = 22;
+                    this.y = GROUND_Y - 22;
+                } else {
+                    this.width = 24;
+                    this.height = 42;
+                    this.y = GROUND_Y - 42;
+                }
+            }
+
+            update() {
+                if (this.isJumping) {
+                    this.vy += this.gravity;
+                    this.y += this.vy;
+
+                    if (this.isCrawling) {
+                        this.vy += 0.7; // Fast drop
+                    }
+
+                    if (this.y >= GROUND_Y - this.height) {
+                        this.y = GROUND_Y - this.height;
+                        this.isJumping = false;
+                        this.vy = 0;
+                    }
+                }
+
+                if (gameState === 'PLAYING') {
+                    this.animTime += 0.25;
+                }
+            }
+
+            draw(c) {
+                c.save();
+
+                const isDark = isDarkMode;
+                const redSuit = '#dc2626';
+                const blueSuit = '#1d4ed8';
+                const darkBlue = '#1e3a8a';
+                const shadowColor = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.15)';
+                const eyeWhite = '#ffffff';
+                const eyeBorder = '#111827';
+
+                if (this.isJumping) {
+                    // --- WEB STRAND ---
+                    c.strokeStyle = isDark ? '#ffffff' : '#475569';
+                    c.lineWidth = 1.2;
+                    c.beginPath();
+                    c.moveTo(this.x + 18, this.y + 12);
+                    c.lineTo(this.webX, this.webY);
+                    c.stroke();
+
+                    // --- JUMP / WEB SWING POSE ---
+                    c.translate(this.x + 12, this.y + 20);
+                    c.rotate(-0.15);
+
+                    // Back Arm
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.arc(-8, -4, 3, 0, Math.PI * 2);
+                    c.fill();
+                    c.strokeStyle = redSuit;
+                    c.lineWidth = 3.5;
+                    c.beginPath();
+                    c.moveTo(-8, -4);
+                    c.lineTo(-14, -14);
+                    c.stroke();
+
+                    // Back Leg
+                    c.strokeStyle = blueSuit;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(-2, 6);
+                    c.lineTo(-10, 16);
+                    c.lineTo(-16, 22);
+                    c.stroke();
+
+                    // Torso
+                    c.fillStyle = blueSuit;
+                    c.beginPath();
+                    c.ellipse(0, 0, 6, 12, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.ellipse(0, -4, 6.5, 7, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Front Leg
+                    c.strokeStyle = blueSuit;
+                    c.lineWidth = 4.5;
+                    c.beginPath();
+                    c.moveTo(2, 6);
+                    c.lineTo(10, 14);
+                    c.lineTo(6, 22);
+                    c.stroke();
+
+                    // Front Arm (shooting web)
+                    c.strokeStyle = redSuit;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(4, -6);
+                    c.lineTo(16, -18);
+                    c.stroke();
+
+                    // Head
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.arc(3, -16, 6, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Lens Eye
+                    c.fillStyle = eyeBorder;
+                    c.beginPath();
+                    c.ellipse(5, -16, 3, 2, 0.3, 0, Math.PI * 2);
+                    c.fill();
+                    c.fillStyle = eyeWhite;
+                    c.beginPath();
+                    c.ellipse(5, -16, 2, 1.2, 0.3, 0, Math.PI * 2);
+                    c.fill();
+
+                } else if (this.isCrawling) {
+                    // --- LOW CROUCH / SLIDE POSE ---
+                    const crawlCycle = Math.sin(this.animTime * 2);
+                    c.translate(this.x + 19, this.y + 11);
+
+                    // Shadow
+                    c.fillStyle = shadowColor;
+                    c.beginPath();
+                    c.ellipse(0, 10, 20, 3, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Back Leg
+                    c.strokeStyle = blueSuit;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(-10, 2);
+                    c.lineTo(-18 + crawlCycle * 4, -4);
+                    c.lineTo(-20 + crawlCycle * 4, 8);
+                    c.stroke();
+
+                    // Torso
+                    c.fillStyle = blueSuit;
+                    c.beginPath();
+                    c.ellipse(0, 2, 12, 5, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.ellipse(4, 1, 8, 5.5, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Head
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.arc(14, 0, 5.5, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Eye
+                    c.fillStyle = eyeBorder;
+                    c.beginPath();
+                    c.ellipse(15, -1, 3.2, 1.8, -0.2, 0, Math.PI * 2);
+                    c.fill();
+                    c.fillStyle = eyeWhite;
+                    c.beginPath();
+                    c.ellipse(15, -1, 2.2, 1, -0.2, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Front Arm
+                    c.strokeStyle = redSuit;
+                    c.lineWidth = 3.5;
+                    c.beginPath();
+                    c.moveTo(8, 2);
+                    c.lineTo(16 - crawlCycle * 4, 8);
+                    c.lineTo(22 - crawlCycle * 4, 8);
+                    c.stroke();
+
+                    // Front Leg
+                    c.strokeStyle = blueSuit;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(-4, 4);
+                    c.lineTo(6, -2);
+                    c.lineTo(8, 8);
+                    c.stroke();
+
+                } else if (gameState === 'GAMEOVER') {
+                    // --- DEFEATED POSE ---
+                    c.translate(this.x + 12, this.y + 30);
+
+                    // Body lying down
+                    c.fillStyle = blueSuit;
+                    c.beginPath();
+                    c.ellipse(0, 4, 14, 5, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.ellipse(-4, 3, 8, 5, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Head
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.arc(12, 4, 5, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Eye X
+                    c.strokeStyle = eyeBorder;
+                    c.lineWidth = 1.5;
+                    c.beginPath();
+                    c.moveTo(10, 2); c.lineTo(14, 6);
+                    c.moveTo(14, 2); c.lineTo(10, 6);
+                    c.stroke();
+
+                } else {
+                    // --- REALISTIC ATHLETIC RUNNING ANIMATION ---
+                    const legAngle1 = Math.sin(this.animTime) * 0.7;
+                    const legAngle2 = -legAngle1;
+                    const armAngle1 = -legAngle1 * 0.8;
+                    const armAngle2 = -armAngle1;
+                    const bob = Math.abs(Math.sin(this.animTime * 2)) * 2;
+
+                    c.translate(this.x + 12, this.y + 20 - bob);
+
+                    // Running Shadow
+                    c.fillStyle = shadowColor;
+                    c.beginPath();
+                    c.ellipse(0, 22 + bob, 12, 2.5, 0, 0, Math.PI * 2);
+                    c.fill();
+
+                    // --- BACK ARM ---
+                    c.save();
+                    c.translate(-1, -8);
+                    c.rotate(armAngle2);
+                    c.strokeStyle = redSuit;
+                    c.lineWidth = 3.5;
+                    c.beginPath();
+                    c.moveTo(0, 0);
+                    c.lineTo(-6, 8);
+                    c.lineTo(-10, 4);
+                    c.stroke();
+                    c.restore();
+
+                    // --- BACK LEG ---
+                    c.save();
+                    c.translate(-2, 4);
+                    c.rotate(legAngle2);
+                    c.strokeStyle = darkBlue;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(0, 0);
+                    c.lineTo(-2, 10);
+                    c.lineTo(-6, 18);
+                    c.stroke();
+                    c.restore();
+
+                    // --- TORSO ---
+                    // Muscular athletic V-taper
+                    c.fillStyle = blueSuit;
+                    c.beginPath();
+                    c.moveTo(-5, -10);
+                    c.lineTo(5, -10);
+                    c.lineTo(3, 4);
+                    c.lineTo(-3, 4);
+                    c.closePath();
+                    c.fill();
+
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.moveTo(-5, -12);
+                    c.lineTo(5, -12);
+                    c.lineTo(3, -2);
+                    c.lineTo(-3, -2);
+                    c.closePath();
+                    c.fill();
+
+                    // Chest Spider Emblem
+                    c.fillStyle = '#111827';
+                    c.beginPath();
+                    c.arc(0, -8, 1.2, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Suit Web Lines Detail
+                    c.strokeStyle = 'rgba(0,0,0,0.25)';
+                    c.lineWidth = 0.6;
+                    c.beginPath();
+                    c.moveTo(-4, -10); c.lineTo(4, -10);
+                    c.moveTo(-3, -6); c.lineTo(3, -6);
+                    c.stroke();
+
+                    // --- HEAD ---
+                    c.fillStyle = redSuit;
+                    c.beginPath();
+                    c.arc(1, -17, 6, 0, Math.PI * 2);
+                    c.fill();
+
+                    // Eyes / Lenses
+                    c.fillStyle = eyeBorder;
+                    c.beginPath();
+                    c.ellipse(3, -17, 3.2, 2, 0.1, 0, Math.PI * 2);
+                    c.fill();
+                    c.fillStyle = eyeWhite;
+                    c.beginPath();
+                    c.ellipse(3, -17, 2.2, 1.2, 0.1, 0, Math.PI * 2);
+                    c.fill();
+
+                    // --- FRONT LEG ---
+                    c.save();
+                    c.translate(0, 4);
+                    c.rotate(legAngle1);
+                    c.strokeStyle = blueSuit;
+                    c.lineWidth = 4.2;
+                    c.beginPath();
+                    c.moveTo(0, 0);
+                    c.lineTo(2, 10);
+                    c.lineTo(6, 18);
+                    c.stroke();
+                    c.restore();
+
+                    // --- FRONT ARM ---
+                    c.save();
+                    c.translate(1, -8);
+                    c.rotate(armAngle1);
+                    c.strokeStyle = redSuit;
+                    c.lineWidth = 4;
+                    c.beginPath();
+                    c.moveTo(0, 0);
+                    c.lineTo(8, 6);
+                    c.lineTo(12, 1);
+                    c.stroke();
+                    c.restore();
+                }
+
+                c.restore();
+            }
+
+            getBounds() {
+                const pad = 3;
+                return {
+                    x: this.x + pad,
+                    y: this.y + pad,
+                    w: this.width - (pad * 2),
+                    h: this.height - (pad * 2)
+                };
+            }
+        }
+
+        class DesertCloud {
+            constructor() {
+                this.x = GAME_WIDTH + Math.random() * 200;
+                this.y = 20 + Math.random() * 40;
+                this.width = 46;
+                this.speed = 0.8 + Math.random() * 0.5;
+            }
+
+            update() {
+                this.x -= this.speed;
+            }
+
+            draw(c) {
+                const cloudColor = isDarkMode ? '#3a3d45' : '#c4c4c4';
+                c.fillStyle = cloudColor;
+                // Classic Dino cloud shape
+                c.fillRect(this.x, this.y, 34, 10);
+                c.fillRect(this.x + 8, this.y - 6, 18, 6);
+                c.fillRect(this.x + 24, this.y + 4, 12, 4);
+            }
+        }
+
+        class CactusObstacle {
+            constructor() {
+                this.x = GAME_WIDTH + 10;
+                this.type = Math.floor(Math.random() * 3); // 0: Small single, 1: Double, 2: Large Cactus
+                this.markedForDeletion = false;
+
+                if (this.type === 0) {
+                    this.width = 14;
+                    this.height = 30;
+                } else if (this.type === 1) {
+                    this.width = 28;
+                    this.height = 32;
+                } else {
+                    this.width = 22;
+                    this.height = 42;
+                }
+                this.y = GROUND_Y - this.height;
+            }
+
+            update() {
+                this.x -= gameSpeed;
+                if (this.x < -40) this.markedForDeletion = true;
+            }
+
+            draw(c) {
+                const color = isDarkMode ? '#acacac' : '#535353';
+                c.fillStyle = color;
+
+                if (this.type === 0) {
+                    // Single Small Cactus
+                    c.fillRect(this.x + 4, this.y, 6, this.height);
+                    c.fillRect(this.x, this.y + 8, 4, 10);
+                    c.fillRect(this.x, this.y + 14, 8, 4);
+                    c.fillRect(this.x + 10, this.y + 12, 4, 8);
+                    c.fillRect(this.x + 6, this.y + 18, 8, 4);
+                } else if (this.type === 1) {
+                    // Double Cactus
+                    c.fillRect(this.x + 2, this.y + 6, 6, 26);
+                    c.fillRect(this.x - 2, this.y + 12, 4, 8);
+                    c.fillRect(this.x + 18, this.y, 6, 32);
+                    c.fillRect(this.x + 24, this.y + 10, 4, 10);
+                } else {
+                    // Tall Triple Cactus
+                    c.fillRect(this.x + 8, this.y, 7, this.height);
+                    c.fillRect(this.x + 1, this.y + 10, 7, 4);
+                    c.fillRect(this.x + 1, this.y + 6, 4, 8);
+                    c.fillRect(this.x + 14, this.y + 16, 7, 4);
+                    c.fillRect(this.x + 17, this.y + 10, 4, 10);
+                }
+            }
+
+            getBounds() {
+                return {
+                    x: this.x + 2,
+                    y: this.y + 2,
+                    w: this.width - 4,
+                    h: this.height - 2
+                };
+            }
+        }
+
+        class PterodactylHazard {
+            constructor() {
+                this.x = GAME_WIDTH + 10;
+                this.width = 32;
+                this.height = 24;
+                this.markedForDeletion = false;
+                this.animFrame = 0;
+
+                // Flying heights: 0: Require duck, 1: Jumpable/Mid, 2: High overhead
+                const heights = [GROUND_Y - 26, GROUND_Y - 42, GROUND_Y - 60];
+                this.y = heights[Math.floor(Math.random() * heights.length)];
+            }
+
+            update() {
+                this.x -= gameSpeed * 1.05;
+                if (this.x < -40) this.markedForDeletion = true;
+                if (frameTicks % 12 === 0) {
+                    this.animFrame = (this.animFrame + 1) % 2;
+                }
+            }
+
+            draw(c) {
+                const color = isDarkMode ? '#acacac' : '#535353';
+                c.fillStyle = color;
+
+                // Wing position flip
+                if (this.animFrame === 0) {
+                    // Wing Up
+                    c.fillRect(this.x + 8, this.y + 8, 16, 8);
+                    c.fillRect(this.x + 18, this.y, 4, 10);
+                    c.fillRect(this.x + 2, this.y + 10, 8, 4);
+                    c.fillRect(this.x + 24, this.y + 12, 8, 4);
+                } else {
+                    // Wing Down
+                    c.fillRect(this.x + 8, this.y + 8, 16, 8);
+                    c.fillRect(this.x + 14, this.y + 14, 4, 10);
+                    c.fillRect(this.x + 2, this.y + 10, 8, 4);
+                    c.fillRect(this.x + 24, this.y + 12, 8, 4);
+                }
+            }
+
+            getBounds() {
+                return {
+                    x: this.x + 3,
+                    y: this.y + 3,
+                    w: this.width - 6,
+                    h: this.height - 6
+                };
+            }
+        }
+
+        let spidey = new RealisticSpiderMan();
+        let obstacles = [];
+        let clouds = [new DesertCloud(), new DesertCloud()];
+        let spawnTimer = 0;
+        let groundOffset = 0;
+
+        function toggleDarkMode(forcedState) {
+            isDarkMode = forcedState !== undefined ? forcedState : !isDarkMode;
+            if (isDarkMode) {
+                bodyEl.classList.add('dark-mode');
+                themeToggle.textContent = '☀️ LIGHT';
+            } else {
+                bodyEl.classList.remove('dark-mode');
+                themeToggle.textContent = '🌙 DARK';
+            }
+        }
+
+        themeToggle.addEventListener('click', () => toggleDarkMode());
+        soundToggle.addEventListener('click', () => {
+            sounds.enabled = !sounds.enabled;
+            soundToggle.textContent = sounds.enabled ? '🔊 SOUND: ON' : '🔇 SOUND: OFF';
+            soundToggle.blur();
+        });
+
+        // Keyboard Controls
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                e.preventDefault();
+                sounds.init();
+                if (gameState === 'START' || gameState === 'GAMEOVER') {
+                    restartGame();
+                } else if (gameState === 'PLAYING') {
+                    spidey.jump();
+                }
+            }
+            if (e.code === 'ArrowDown' && gameState === 'PLAYING') {
+                e.preventDefault();
+                spidey.crawl(true);
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowDown') {
+                spidey.crawl(false);
+            }
+        });
+
+        // Mobile Touch Listeners
+        document.getElementById('touch-jump').addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            sounds.init();
+            if (gameState === 'START' || gameState === 'GAMEOVER') {
+                restartGame();
+            } else if (gameState === 'PLAYING') {
+                spidey.jump();
+            }
+        });
+
+        const touchDuck = document.getElementById('touch-duck');
+        touchDuck.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            if (gameState === 'PLAYING') spidey.crawl(true);
+        });
+        touchDuck.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (gameState === 'PLAYING') spidey.crawl(false);
+        });
+
+        function restartGame() {
+            spidey = new RealisticSpiderMan();
+            obstacles = [];
+            score = 0;
+            gameSpeed = 6;
+            spawnTimer = 0;
+            gameState = 'PLAYING';
+        }
+
+        function checkCollision(r1, r2) {
+            return (
+                r1.x < r2.x + r2.w &&
+                r1.x + r1.w > r2.x &&
+                r1.y < r2.y + r2.h &&
+                r1.y + r1.h > r2.y
+            );
+        }
+
+        function drawGround(c) {
+            const lineColor = isDarkMode ? '#acacac' : '#535353';
+            c.strokeStyle = lineColor;
+            c.lineWidth = 2;
+            c.beginPath();
+            c.moveTo(0, GROUND_Y);
+            c.lineTo(GAME_WIDTH, GROUND_Y);
+            c.stroke();
+
+            // Classic Dino Ground Bumps/Dots
+            c.fillStyle = lineColor;
+            groundOffset = (groundOffset + gameSpeed) % 24;
+            for (let x = -groundOffset; x < GAME_WIDTH; x += 18) {
+                if ((x * 7) % 5 === 0) {
+                    c.fillRect(x, GROUND_Y + 6, 2, 2);
+                } else if ((x * 3) % 4 === 0) {
+                    c.fillRect(x, GROUND_Y + 12, 4, 1);
+                }
+            }
+        }
+
+        function gameLoop() {
+            frameTicks++;
+
+            // Clear Background
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+            // Update & Draw Clouds
+            clouds.forEach(cloud => {
+                if (gameState === 'PLAYING') cloud.update();
+                cloud.draw(ctx);
+            });
+            if (clouds.length < 3 && Math.random() < 0.01) {
+                clouds.push(new DesertCloud());
+            }
+            clouds = clouds.filter(c => c.x > -60);
+
+            // Draw Dino Ground
+            drawGround(ctx);
+
+            if (gameState === 'PLAYING') {
+                score += 0.15;
+                gameSpeed = 6 + Math.floor(score / 100) * 0.45;
+
+                // Milestone chime
+                if (Math.floor(score) > 0 && Math.floor(score) % 100 === 0 && Math.floor(score - 0.15) % 100 !== 0) {
+                    sounds.scoreMilestone();
+                }
+
+                // Auto Day/Night Cycle option every 700 pts
+                if (Math.floor(score) % 700 === 0 && Math.floor(score) > 0 && Math.floor(score - 0.15) % 700 !== 0) {
+                    toggleDarkMode();
+                }
+
+                spidey.update();
+
+                // Obstacle Spawner logic
+                spawnTimer++;
+                if (spawnTimer > Math.max(30, 80 - Math.floor(gameSpeed * 2))) {
+                    if (Math.random() < 0.7) {
+                        if (score > 150 && Math.random() < 0.4) {
+                            obstacles.push(new PterodactylHazard());
+                        } else {
+                            obstacles.push(new CactusObstacle());
+                        }
+                        spawnTimer = -Math.floor(Math.random() * 20);
+                    }
+                }
+
+                // Update Obstacles
+                obstacles.forEach(obs => obs.update());
+                obstacles = obstacles.filter(o => !o.markedForDeletion);
+
+                // Collision detection
+                const spideyBox = spidey.getBounds();
+                for (let obs of obstacles) {
+                    if (checkCollision(spideyBox, obs.getBounds())) {
+                        gameState = 'GAMEOVER';
+                        sounds.hit();
+                        if (Math.floor(score) > highScore) {
+                            highScore = Math.floor(score);
+                            localStorage.setItem('spidey_dino_hi_score', highScore);
+                        }
+                    }
+                }
+            }
+
+            // Draw Obstacles & Spidey
+            obstacles.forEach(obs => obs.draw(ctx));
+            spidey.draw(ctx);
+
+            // Draw Retro Score Header
+            ctx.fillStyle = isDarkMode ? '#acacac' : '#535353';
+            ctx.font = '10px "Press Start 2P"';
+            ctx.textAlign = 'right';
+            const curScoreStr = String(Math.floor(score)).padStart(5, '0');
+            const hiScoreStr = String(highScore).padStart(5, '0');
+            ctx.fillText(`HI ${hiScoreStr}  ${curScoreStr}`, GAME_WIDTH - 15, 20);
+
+            // Screen States (Start & Game Over Overlay)
+            if (gameState === 'START') {
+                ctx.fillStyle = isDarkMode ? '#ffffff' : '#535353';
+                ctx.textAlign = 'center';
+                ctx.fillText('PRESS SPACE TO RUN', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 8);
+            } else if (gameState === 'GAMEOVER') {
+                ctx.fillStyle = isDarkMode ? '#ffffff' : '#535353';
+                ctx.textAlign = 'center';
+                ctx.fillText('G A M E  O V E R', GAME_WIDTH / 2, GAME_HEIGHT / 2 - 16);
+
+                // Draw Classic Dino Reset Button Icon
+                const rx = GAME_WIDTH / 2 - 12;
+                const ry = GAME_HEIGHT / 2 + 4;
+                ctx.strokeStyle = isDarkMode ? '#ffffff' : '#535353';
+                ctx.lineWidth = 2.5;
+                ctx.beginPath();
+                ctx.arc(rx + 12, ry + 12, 9, 0.2 * Math.PI, 1.7 * Math.PI);
+                ctx.stroke();
+                // Arrowhead
+                ctx.fillStyle = isDarkMode ? '#ffffff' : '#535353';
+                ctx.beginPath();
+                ctx.moveTo(rx + 17, ry + 3);
+                ctx.lineTo(rx + 23, ry + 7);
+                ctx.lineTo(rx + 17, ry + 11);
+                ctx.fill();
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        window.onload = () => {
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
